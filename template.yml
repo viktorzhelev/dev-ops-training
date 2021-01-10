@@ -131,11 +131,15 @@ Resources:
             # run a container using the image from the ECR repository (the EcrRepoName parameter has the name of the repo)
             # to reference an image from a ECR repo -  <ECR registry address>/<ECR repo name>
             
+              docker run 378652049675.dkr.ecr.eu-west-1.amazonaws.com/$EcrRepoName -p 5000:80
+            
             # - the container exposes port 5000, which should be mapped to port 80 of the instance 
                 https://docs.docker.com/config/containers/container-networking/      
             # - check here https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference-sub.html
             #   the "UserData commands" YAML section at the bottom for the syntax of how to access stack parameters
 
+            EcrRepoName=${AWS::StackName}
+            
             
             echo "[$(date)] started docker container " >> $log_file
             
