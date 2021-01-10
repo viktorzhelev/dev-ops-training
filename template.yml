@@ -1,0 +1,172 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: "Simple template to create an EC2 instance with apache on it"
+Parameters: 
+  Environment:
+    Type: String
+    AllowedValues:
+      - qa
+    Default: qa
+  SSHAllowedCIDR:
+    Type: String
+    Description: The IP from which we can use ssh to the ec2 instance
+    Default: 0.0.0.0/0
+    
+  EcrRepoName:
+    Type: String
+    Description: the name of the ecr docker image registry you created (e.g. userX-web-app)
+  
+
+Mappings: 
+  PerEnv:
+    qa:
+      InstanceSize: t3.medium
+      DesiredCapacity: 1
+      MinCapacity: 1
+      MaxCapacity: 1
+    prod:
+      InstanceSize: t3.medium
+      DesiredCapacity: 3
+      MinCapacity: 2
+      MaxCapacity: 5
+
+  PerRegion:
+    eu-west-1:
+      AMI:  ami-0dc8d444ee2a42d8a
+      KeyName: aws2020-eu
+      SubnetA: subnet-dbbfe080
+      SubnetB: subnet-74766413
+      VpcId: vpc-9ae716fc
+    us-east-1:
+      AMI: ami-07d0cf3af28718ef8
+      KeyName: aws2020-us
+      SubnetA: subnet-ced0e4a9
+      SubnetB: subnet-9b5163b5
+      VpcId: vpc-9c9ddde6
+    
+# json + yaml
+Resources: 
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Ooopen to the world :)
+      VpcId: !FindInMap [PerRegion, !Ref "AWS::Region", VpcId ]
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHAllowedCIDR
+        
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"     
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Policies: 
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: "Allow"
+                Action: 
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 'sns:Publish'
+                Resource: '*'
+          PolicyName: "s3"
+
+      RoleName: !Sub "${AWS::Region}-${AWS::StackName}-ec2-instance-role"
+
+  RootInstanceProfile: 
+    Type: "AWS::IAM::InstanceProfile"
+    Properties: 
+      Path: "/"
+      Roles: 
+        - !Ref "EC2Role"
+  LC:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties: 
+      AssociatePublicIpAddress: True
+      
+
+      IamInstanceProfile: !GetAtt ['RootInstanceProfile', 'Arn']
+      ImageId: !FindInMap [PerRegion, !Ref "AWS::Region", AMI ]
+      InstanceType: !FindInMap [PerEnv, !Ref Environment, InstanceSize ]
+      KeyName: !FindInMap [PerRegion, !Ref "AWS::Region", KeyName]
+      #LaunchConfigurationName: !Sub "${Environment}-${AWS::StackName}-lc"
+      SecurityGroups: 
+        - !Ref SecurityGroup
+      UserData: 
+        Fn::Base64: 
+          !Sub |
+            #!/bin/bash -e
+            
+            log_file=/var/log/bootstrap.log
+            touch $log_file
+            echo "[$(date)] starting" >> $log_file
+            
+            apt-get update  && apt-get install awscli -y
+            curl -fsSL https://get.docker.com -o get-docker.sh
+            sh get-docker.sh
+
+
+            echo "logging into ECR registry so that we can fetch images from it"
+            aws ecr get-login-password --region eu-west-1 | docker login --username AWS --password-stdin 378652049675.dkr.ecr.eu-west-1.amazonaws.com
+            echo "[$(date)] logged in ECR " >> $log_file
+            
+            #### CHANGE HERE #####
+            # run a container using the image from the ECR repository (the EcrRepoName parameter has the name of the repo)
+            # to reference an image from a ECR repo -  <ECR registry address>/<ECR repo name>
+            
+            # - the container exposes port 5000, which should be mapped to port 80 of the instance 
+                https://docs.docker.com/config/containers/container-networking/      
+            # - check here https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference-sub.html
+            #   the "UserData commands" YAML section at the bottom for the syntax of how to access stack parameters
+
+            
+            echo "[$(date)] started docker container " >> $log_file
+            
+            echo "[$(date)] done :)" >> $log_file
+
+
+  ASG:
+
+    Type : "AWS::AutoScaling::AutoScalingGroup"
+    Properties:
+      AutoScalingGroupName: !Sub "${Environment}-${AWS::StackName}-asg"
+      AvailabilityZones: 
+        - !Sub "${AWS::Region}a"
+        - !Sub "${AWS::Region}b"
+      DesiredCapacity: !FindInMap [PerEnv, !Ref Environment, DesiredCapacity ]
+      HealthCheckGracePeriod: 10
+      HealthCheckType: EC2
+      LaunchConfigurationName: !Ref LC
+
+      MaxSize: !FindInMap [PerEnv, !Ref Environment, MaxCapacity ]
+      MinSize: !FindInMap [PerEnv, !Ref Environment, MinCapacity ]
+
+      Tags: 
+        - Key: 'namespace'
+          PropagateAtLaunch: True
+          Value: 'progressbg'
+        - Key: 'type'
+          PropagateAtLaunch: True
+          Value: 'testing'
+
+      VPCZoneIdentifier: 
+        - !FindInMap [PerRegion, !Ref "AWS::Region", SubnetA ]
+        - !FindInMap [PerRegion, !Ref "AWS::Region", SubnetB ]
+
